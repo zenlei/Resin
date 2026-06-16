@@ -15,6 +15,9 @@ export type RuntimeConfig = {
   latency_decay_window: string;
   cache_flush_interval: string;
   cache_flush_dirty_threshold: number;
+  healthy_node_subscription_enabled: boolean;
+  healthy_node_subscription_token: string;
+  healthy_node_subscription_refresh_interval: string;
 };
 
 export type EnvConfig = {
@@ -63,3 +66,16 @@ export type EnvConfig = {
 };
 
 export type RuntimeConfigPatch = Partial<RuntimeConfig>;
+
+export type HealthyNodeSubscriptionStatus = {
+  enabled: boolean;
+  content_type: string;
+  node_count: number;
+  clash_node_count: number;
+  generated_at?: string;
+  last_error?: string;
+  refresh_interval: string;
+  subscription_url?: string;
+  subscription_urls?: Record<string, string>;
+  token_required: boolean;
+};

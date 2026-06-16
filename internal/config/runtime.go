@@ -30,6 +30,11 @@ type RuntimeConfig struct {
 	// Persistence
 	CacheFlushInterval       Duration `json:"cache_flush_interval"`
 	CacheFlushDirtyThreshold int      `json:"cache_flush_dirty_threshold"`
+
+	// Healthy node subscription export
+	HealthyNodeSubscriptionEnabled         bool     `json:"healthy_node_subscription_enabled"`
+	HealthyNodeSubscriptionToken           string   `json:"healthy_node_subscription_token"`
+	HealthyNodeSubscriptionRefreshInterval Duration `json:"healthy_node_subscription_refresh_interval"`
 }
 
 // NewDefaultRuntimeConfig returns a RuntimeConfig populated with the default
@@ -56,5 +61,9 @@ func NewDefaultRuntimeConfig() *RuntimeConfig {
 
 		CacheFlushInterval:       Duration(5 * time.Minute),
 		CacheFlushDirtyThreshold: 1000,
+
+		HealthyNodeSubscriptionEnabled:         false,
+		HealthyNodeSubscriptionToken:           "",
+		HealthyNodeSubscriptionRefreshInterval: Duration(5 * time.Minute),
 	}
 }

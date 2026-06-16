@@ -1,5 +1,5 @@
 import { apiRequest } from "../../lib/api-client";
-import type { EnvConfig, RuntimeConfig, RuntimeConfigPatch } from "./types";
+import type { EnvConfig, HealthyNodeSubscriptionStatus, RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 const path = "/api/v1/system/config";
 
@@ -20,6 +20,9 @@ const DEFAULT_CONFIG: RuntimeConfig = {
   latency_decay_window: "",
   cache_flush_interval: "",
   cache_flush_dirty_threshold: 0,
+  healthy_node_subscription_enabled: false,
+  healthy_node_subscription_token: "",
+  healthy_node_subscription_refresh_interval: "",
 };
 
 function asNumber(raw: unknown, fallback: number): number {
@@ -79,6 +82,15 @@ function normalizeRuntimeConfig(raw: Partial<RuntimeConfig> | null | undefined):
       raw.cache_flush_dirty_threshold,
       DEFAULT_CONFIG.cache_flush_dirty_threshold,
     ),
+    healthy_node_subscription_enabled: Boolean(raw.healthy_node_subscription_enabled),
+    healthy_node_subscription_token: asString(
+      raw.healthy_node_subscription_token,
+      DEFAULT_CONFIG.healthy_node_subscription_token,
+    ),
+    healthy_node_subscription_refresh_interval: asString(
+      raw.healthy_node_subscription_refresh_interval,
+      DEFAULT_CONFIG.healthy_node_subscription_refresh_interval,
+    ),
   };
 }
 
@@ -102,4 +114,14 @@ export async function patchSystemConfig(patch: RuntimeConfigPatch): Promise<Runt
 
 export async function getEnvConfig(): Promise<EnvConfig> {
   return await apiRequest<EnvConfig>(path + "/env");
+}
+
+export async function getHealthyNodeSubscriptionStatus(): Promise<HealthyNodeSubscriptionStatus> {
+  return await apiRequest<HealthyNodeSubscriptionStatus>("/api/v1/healthy-node-subscription/status");
+}
+
+export async function refreshHealthyNodeSubscription(): Promise<HealthyNodeSubscriptionStatus> {
+  return await apiRequest<HealthyNodeSubscriptionStatus>("/api/v1/healthy-node-subscription/actions/refresh", {
+    method: "POST",
+  });
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/Resinat/Resin/internal/proxy"
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/subscriptionexport"
 	"github.com/Resinat/Resin/internal/topology"
 )
 
@@ -58,6 +59,7 @@ type ControlPlaneService struct {
 	GeoIP          *geoip.Service
 	ProbeMgr       *probe.ProbeManager
 	MatcherRuntime *proxy.AccountMatcherRuntime
+	SubExporter    *subscriptionexport.Exporter
 	RuntimeCfg     *atomic.Pointer[config.RuntimeConfig]
 	EnvCfg         *config.EnvConfig
 
@@ -71,22 +73,25 @@ type ControlPlaneService struct {
 
 // runtimeConfigAllowedFields is the set of JSON field names that can be patched.
 var runtimeConfigAllowedFields = map[string]bool{
-	"request_log_enabled":                      true,
-	"reverse_proxy_log_detail_enabled":         true,
-	"reverse_proxy_log_req_headers_max_bytes":  true,
-	"reverse_proxy_log_req_body_max_bytes":     true,
-	"reverse_proxy_log_resp_headers_max_bytes": true,
-	"reverse_proxy_log_resp_body_max_bytes":    true,
-	"max_consecutive_failures":                 true,
-	"max_latency_test_interval":                true,
-	"max_authority_latency_test_interval":      true,
-	"max_egress_test_interval":                 true,
-	"latency_test_url":                         true,
-	"latency_authorities":                      true,
-	"p2c_latency_window":                       true,
-	"latency_decay_window":                     true,
-	"cache_flush_interval":                     true,
-	"cache_flush_dirty_threshold":              true,
+	"request_log_enabled":                        true,
+	"reverse_proxy_log_detail_enabled":           true,
+	"reverse_proxy_log_req_headers_max_bytes":    true,
+	"reverse_proxy_log_req_body_max_bytes":       true,
+	"reverse_proxy_log_resp_headers_max_bytes":   true,
+	"reverse_proxy_log_resp_body_max_bytes":      true,
+	"max_consecutive_failures":                   true,
+	"max_latency_test_interval":                  true,
+	"max_authority_latency_test_interval":        true,
+	"max_egress_test_interval":                   true,
+	"latency_test_url":                           true,
+	"latency_authorities":                        true,
+	"p2c_latency_window":                         true,
+	"latency_decay_window":                       true,
+	"cache_flush_interval":                       true,
+	"cache_flush_dirty_threshold":                true,
+	"healthy_node_subscription_enabled":          true,
+	"healthy_node_subscription_token":            true,
+	"healthy_node_subscription_refresh_interval": true,
 }
 
 var platformPatchAllowedFields = map[string]bool{
@@ -236,6 +241,18 @@ func validateRuntimeConfig(cfg *config.RuntimeConfig) *ServiceError {
 	minCacheFlushInterval := 5 * time.Second
 	if time.Duration(cfg.CacheFlushInterval) < minCacheFlushInterval {
 		return invalidArg("cache_flush_interval: must be >= 5s")
+	}
+	if cfg.HealthyNodeSubscriptionRefreshInterval < 0 {
+		return invalidArg("healthy_node_subscription_refresh_interval: must be non-negative")
+	}
+	if cfg.HealthyNodeSubscriptionEnabled {
+		if strings.TrimSpace(cfg.HealthyNodeSubscriptionToken) == "" {
+			return invalidArg("healthy_node_subscription_token: required when healthy node subscription export is enabled")
+		}
+		minExportRefreshInterval := 30 * time.Second
+		if time.Duration(cfg.HealthyNodeSubscriptionRefreshInterval) < minExportRefreshInterval {
+			return invalidArg("healthy_node_subscription_refresh_interval: must be >= 30s")
+		}
 	}
 
 	// LatencyTestURL domain must be in LatencyAuthorities.

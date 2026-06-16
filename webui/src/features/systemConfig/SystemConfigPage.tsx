@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, RefreshCw, RotateCcw, Save, Sparkles } from "lucide-react";
+import { AlertTriangle, Copy, RefreshCw, RotateCcw, Save, Sparkles } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Badge } from "../../components/ui/Badge";
 import { Button } from "../../components/ui/Button";
@@ -11,7 +11,14 @@ import { ToastContainer } from "../../components/ui/Toast";
 import { useToast } from "../../hooks/useToast";
 import i18next, { useI18n } from "../../i18n";
 import { formatApiErrorMessage } from "../../lib/error-message";
-import { getEnvConfig, patchSystemConfig, getSystemConfig, getDefaultSystemConfig } from "./api";
+import {
+  getEnvConfig,
+  getHealthyNodeSubscriptionStatus,
+  patchSystemConfig,
+  refreshHealthyNodeSubscription,
+  getSystemConfig,
+  getDefaultSystemConfig,
+} from "./api";
 import type { RuntimeConfig, RuntimeConfigPatch } from "./types";
 
 type RuntimeConfigForm = {
@@ -31,6 +38,9 @@ type RuntimeConfigForm = {
   latency_decay_window: string;
   cache_flush_interval: string;
   cache_flush_dirty_threshold: string;
+  healthy_node_subscription_enabled: boolean;
+  healthy_node_subscription_token: string;
+  healthy_node_subscription_refresh_interval: string;
 };
 
 const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
@@ -50,6 +60,9 @@ const EDITABLE_FIELDS: Array<keyof RuntimeConfig> = [
   "latency_decay_window",
   "cache_flush_interval",
   "cache_flush_dirty_threshold",
+  "healthy_node_subscription_enabled",
+  "healthy_node_subscription_token",
+  "healthy_node_subscription_refresh_interval",
 ];
 
 const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
@@ -69,6 +82,9 @@ const FIELD_LABELS: Record<keyof RuntimeConfig, string> = {
   latency_decay_window: "历史延迟衰减窗口",
   cache_flush_interval: "缓存异步刷盘间隔",
   cache_flush_dirty_threshold: "缓存刷盘脏阈值",
+  healthy_node_subscription_enabled: "启用健康节点订阅导出",
+  healthy_node_subscription_token: "健康节点订阅访问 Token",
+  healthy_node_subscription_refresh_interval: "健康节点订阅刷新间隔",
 };
 
 const ALLOCATION_POLICY_LABELS: Record<string, string> = {
@@ -106,6 +122,9 @@ function configToForm(config: RuntimeConfig): RuntimeConfigForm {
     latency_decay_window: config.latency_decay_window,
     cache_flush_interval: config.cache_flush_interval,
     cache_flush_dirty_threshold: String(config.cache_flush_dirty_threshold),
+    healthy_node_subscription_enabled: config.healthy_node_subscription_enabled,
+    healthy_node_subscription_token: config.healthy_node_subscription_token,
+    healthy_node_subscription_refresh_interval: config.healthy_node_subscription_refresh_interval,
   };
 }
 
@@ -180,7 +199,22 @@ function parseForm(form: RuntimeConfigForm): RuntimeConfig {
     latency_decay_window: parseDurationField("历史延迟衰减窗口", form.latency_decay_window),
     cache_flush_interval: parseDurationField("缓存异步刷盘间隔", form.cache_flush_interval),
     cache_flush_dirty_threshold: parseNonNegativeInt("缓存刷盘脏阈值", form.cache_flush_dirty_threshold),
+    healthy_node_subscription_enabled: form.healthy_node_subscription_enabled,
+    healthy_node_subscription_token: form.healthy_node_subscription_token.trim(),
+    healthy_node_subscription_refresh_interval: parseDurationField(
+      "健康节点订阅刷新间隔",
+      form.healthy_node_subscription_refresh_interval,
+    ),
   };
+}
+
+function buildTokenizedSubscriptionURL(template: string | undefined, token: string): string {
+  const trimmedTemplate = template?.trim() || "/api/v1/healthy-node-subscription?token=<token>";
+  const trimmedToken = token.trim();
+  if (!trimmedToken) {
+    return trimmedTemplate;
+  }
+  return trimmedTemplate.replace("<token>", encodeURIComponent(trimmedToken));
 }
 
 function displayAllocationPolicy(value: string): string {
@@ -255,6 +289,12 @@ export function SystemConfigPage() {
     staleTime: Infinity, // Env config does not change at runtime
   });
 
+  const exportStatusQuery = useQuery({
+    queryKey: ["healthy-node-subscription-status"],
+    queryFn: getHealthyNodeSubscriptionStatus,
+    staleTime: 30_000,
+  });
+
   const baseline = configQuery.data ?? null;
   const defaultBaseline = defaultConfigQuery.data ?? null;
   const envBaseline = envConfigQuery.data ?? null;
@@ -316,7 +356,19 @@ export function SystemConfigPage() {
       queryClient.setQueryData(["system-config"], updated);
       setDraftForm(null);
       setCustomPatchText(null);
+      void queryClient.invalidateQueries({ queryKey: ["healthy-node-subscription-status"] });
       showToast("success", t("配置已更新（{{count}} 项变更）", { count: changedCount }));
+    },
+    onError: (error) => {
+      showToast("error", formatApiErrorMessage(error, t));
+    },
+  });
+
+  const refreshExportMutation = useMutation({
+    mutationFn: refreshHealthyNodeSubscription,
+    onSuccess: (status) => {
+      queryClient.setQueryData(["healthy-node-subscription-status"], status);
+      showToast("success", t("健康节点订阅已重新生成"));
     },
     onError: (error) => {
       showToast("error", formatApiErrorMessage(error, t));
@@ -414,6 +466,24 @@ export function SystemConfigPage() {
   const displayedPatchText = customPatchText ?? defaultPatchText;
 
   const isSaveDisabled = saveMutation.isPending || (customPatchText === null && (Boolean(parsedResult.error) || !hasUnsavedChanges));
+  const exportStatus = exportStatusQuery.data ?? null;
+  const singboxSubscriptionURL = buildTokenizedSubscriptionURL(
+    exportStatus?.subscription_urls?.singbox ?? exportStatus?.subscription_url,
+    form?.healthy_node_subscription_token ?? "",
+  );
+  const clashSubscriptionURL = buildTokenizedSubscriptionURL(
+    exportStatus?.subscription_urls?.clash,
+    form?.healthy_node_subscription_token ?? "",
+  );
+
+  const copySubscriptionURL = async (url: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("success", t("{{format}} 订阅链接已复制", { format: label }));
+    } catch (error) {
+      showToast("error", formatApiErrorMessage(error, t));
+    }
+  };
 
   return (
     <section className="syscfg-page">
@@ -671,6 +741,125 @@ export function SystemConfigPage() {
                       value={form.latency_authorities_raw}
                       onChange={(event) => setFormField("latency_authorities_raw", event.target.value)}
                     />
+                  </div>
+                </div>
+              </section>
+
+              <section className="syscfg-section">
+                <h4>{t("健康节点订阅导出")}</h4>
+                <div className="syscfg-checkbox-grid" style={{ display: "grid", gridTemplateColumns: "1fr", gap: "16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "var(--surface-sunken, rgba(0,0,0,0.02))", padding: "12px 16px", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <span className="field-label" style={{ margin: 0, fontWeight: 500 }}>{t("启用健康节点订阅导出")}</span>
+                      {renderRestoreButton("healthy_node_subscription_enabled")}
+                    </div>
+                    <Switch
+                      checked={form.healthy_node_subscription_enabled}
+                      onChange={(event) => setFormField("healthy_node_subscription_enabled", event.target.checked)}
+                    />
+                  </div>
+                </div>
+
+                <div className="form-grid" style={{ marginTop: "16px" }}>
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-healthy-sub-token" style={{ margin: 0 }}>
+                        {t("健康节点订阅访问 Token")}
+                      </label>
+                      {renderRestoreButton("healthy_node_subscription_token")}
+                    </div>
+                    <Input
+                      id="sys-healthy-sub-token"
+                      type="password"
+                      value={form.healthy_node_subscription_token}
+                      onChange={(event) => setFormField("healthy_node_subscription_token", event.target.value)}
+                    />
+                  </div>
+
+                  <div className="field-group">
+                    <div style={{ display: "flex", alignItems: "center" }}>
+                      <label className="field-label" htmlFor="sys-healthy-sub-refresh" style={{ margin: 0 }}>
+                        {t("健康节点订阅刷新间隔")}
+                      </label>
+                      {renderRestoreButton("healthy_node_subscription_refresh_interval")}
+                    </div>
+                    <Input
+                      id="sys-healthy-sub-refresh"
+                      value={form.healthy_node_subscription_refresh_interval}
+                      onChange={(event) => setFormField("healthy_node_subscription_refresh_interval", event.target.value)}
+                    />
+                  </div>
+                </div>
+
+                <div className="callout" style={{ marginTop: "16px", alignItems: "flex-start" }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap", marginBottom: "8px" }}>
+                      <Badge variant={exportStatus?.enabled ? "success" : "neutral"}>
+                        {exportStatus?.enabled ? t("运行中") : t("已停用")}
+                      </Badge>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                        {t("sing-box 节点数")}: {exportStatus?.node_count ?? 0}
+                      </span>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                        {t("Clash 节点数")}: {exportStatus?.clash_node_count ?? 0}
+                      </span>
+                      <span style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                        {t("上次更新")}: {exportStatus?.generated_at ? new Date(exportStatus.generated_at).toLocaleString() : "-"}
+                      </span>
+                    </div>
+                    {exportStatus?.last_error ? (
+                      <p style={{ color: "var(--danger)", fontSize: "12px", marginBottom: "8px" }}>{exportStatus.last_error}</p>
+                    ) : null}
+                    <div style={{ display: "grid", gap: "12px" }}>
+                      <div style={{ display: "grid", gap: "6px" }}>
+                        <label className="field-label" htmlFor="sys-healthy-sub-singbox-url" style={{ margin: 0 }}>
+                          {t("sing-box JSON 订阅链接")}
+                        </label>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px" }}>
+                          <Input id="sys-healthy-sub-singbox-url" readOnly value={singboxSubscriptionURL} />
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => void copySubscriptionURL(singboxSubscriptionURL, "sing-box")}
+                            disabled={!form.healthy_node_subscription_token.trim()}
+                            title={t("复制 sing-box 订阅链接")}
+                          >
+                            <Copy size={14} />
+                            {t("复制 sing-box")}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div style={{ display: "grid", gap: "6px" }}>
+                        <label className="field-label" htmlFor="sys-healthy-sub-clash-url" style={{ margin: 0 }}>
+                          {t("Clash YAML 订阅链接")}
+                        </label>
+                        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: "8px" }}>
+                          <Input id="sys-healthy-sub-clash-url" readOnly value={clashSubscriptionURL} />
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => void copySubscriptionURL(clashSubscriptionURL, "Clash")}
+                            disabled={!form.healthy_node_subscription_token.trim()}
+                            title={t("复制 Clash 订阅链接")}
+                          >
+                            <Copy size={14} />
+                            {t("复制 Clash")}
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexShrink: 0, flexWrap: "wrap" }}>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void refreshExportMutation.mutateAsync()}
+                      disabled={refreshExportMutation.isPending || !form.healthy_node_subscription_enabled}
+                      title={t("重新生成")}
+                    >
+                      <RefreshCw size={14} className={refreshExportMutation.isPending ? "spin" : undefined} />
+                    </Button>
                   </div>
                 </div>
               </section>

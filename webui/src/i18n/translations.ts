@@ -668,6 +668,23 @@ const EXACT_ZH_TO_EN: Record<string, string> = {
   "总请求": "Total requests",
   "最近错误：{{message}}": "Recent error: {{message}}",
   "配置已更新（{{count}} 项变更）": "Config updated ({{count}} changes)",
+  "启用健康节点订阅导出": "Enable healthy node subscription export",
+  "健康节点订阅访问 Token": "Healthy node subscription token",
+  "健康节点订阅刷新间隔": "Healthy node subscription refresh interval",
+  "健康节点订阅导出": "Healthy Node Subscription Export",
+  "健康节点订阅已重新生成": "Healthy node subscription regenerated",
+  "订阅链接已复制": "Subscription URL copied",
+  "{{format}} 订阅链接已复制": "{{format}} subscription URL copied",
+  "重新生成": "Regenerate",
+  "复制订阅链接": "Copy subscription URL",
+  "复制 sing-box 订阅链接": "Copy sing-box subscription URL",
+  "复制 Clash 订阅链接": "Copy Clash subscription URL",
+  "复制 sing-box": "Copy sing-box",
+  "复制 Clash": "Copy Clash",
+  "sing-box 节点数": "sing-box nodes",
+  "Clash 节点数": "Clash nodes",
+  "sing-box JSON 订阅链接": "sing-box JSON subscription URL",
+  "Clash YAML 订阅链接": "Clash YAML subscription URL",
 };
 
 export function translateDocumentTitle(locale: AppLocale): string {

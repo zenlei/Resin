@@ -11,6 +11,7 @@ import (
 	"github.com/Resinat/Resin/internal/metrics"
 	"github.com/Resinat/Resin/internal/requestlog"
 	"github.com/Resinat/Resin/internal/service"
+	"github.com/Resinat/Resin/internal/subscriptionexport"
 )
 
 // Server wraps the HTTP server and mux for the Resin API.
@@ -101,6 +102,10 @@ func NewServerWithAddress(
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/refresh", HandleRefreshSubscription(cp))
 		authed.Handle("POST /api/v1/subscriptions/{id}/actions/cleanup-circuit-open-nodes", HandleCleanupSubscriptionCircuitOpenNodes(cp))
 
+		// Healthy node subscription export management.
+		authed.Handle("GET /api/v1/healthy-node-subscription/status", HandleGetHealthyNodeSubscriptionStatus(cp))
+		authed.Handle("POST /api/v1/healthy-node-subscription/actions/refresh", HandleRefreshHealthyNodeSubscription(cp))
+
 		// Account header rules.
 		authed.Handle("GET /api/v1/account-header-rules", HandleListRules(cp))
 		// Canonical route (DESIGN.md): url_prefix comes from path parameter only.
@@ -147,6 +152,10 @@ func NewServerWithAddress(
 		authed.Handle("GET /api/v1/metrics/snapshots/node-pool", HandleSnapshotNodePool(metricsManager))
 		authed.Handle("GET /api/v1/metrics/snapshots/platform-node-pool", HandleSnapshotPlatformNodePool(metricsManager))
 		authed.Handle("GET /api/v1/metrics/snapshots/node-latency-distribution", HandleSnapshotNodeLatencyDistribution(metricsManager))
+	}
+
+	if cp != nil {
+		mux.Handle("GET "+subscriptionexport.SubscriptionPath, HandleDownloadHealthyNodeSubscription(cp))
 	}
 
 	limitedAuthed := RequestBodyLimitMiddleware(apiMaxBodyBytes, authed)

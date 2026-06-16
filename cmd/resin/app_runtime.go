@@ -27,6 +27,7 @@ import (
 	"github.com/Resinat/Resin/internal/routing"
 	"github.com/Resinat/Resin/internal/service"
 	"github.com/Resinat/Resin/internal/state"
+	"github.com/Resinat/Resin/internal/subscriptionexport"
 )
 
 type resinApp struct {
@@ -40,6 +41,7 @@ type resinApp struct {
 	metricsManager *metrics.Manager
 	requestlogRepo *requestlog.Repo
 	requestlogSvc  *requestlog.Service
+	subExporter    *subscriptionexport.Exporter
 	inboundSrv     interface {
 		Serve(net.Listener) error
 		Shutdown(context.Context) error
@@ -108,6 +110,10 @@ func newResinApp(envCfg *config.EnvConfig, engine *state.StateEngine) (*resinApp
 	if err := app.initObservability(); err != nil {
 		return nil, err
 	}
+	app.subExporter = subscriptionexport.NewExporter(subscriptionexport.Config{
+		Pool:       app.topoRuntime.pool,
+		RuntimeCfg: app.runtimeCfg,
+	})
 	if err := app.buildNetworkServers(engine); err != nil {
 		return nil, err
 	}
@@ -350,6 +356,11 @@ func (a *resinApp) startBackgroundServices() {
 	a.topoRuntime.ephemeralCleaner.Start()
 	log.Println("Ephemeral cleaner started (batch 2)")
 
+	if a.subExporter != nil {
+		a.subExporter.Start()
+		log.Println("Healthy node subscription exporter started (batch 2)")
+	}
+
 	// --- Step 8 Batch 3: Subscription scheduler (force full refresh on start) ---
 	a.topoRuntime.scheduler.Start()
 	a.topoRuntime.scheduler.ForceRefreshAllAsync()
@@ -376,6 +387,7 @@ func (a *resinApp) buildNetworkServers(engine *state.StateEngine) error {
 		ProbeMgr:       a.topoRuntime.probeMgr,
 		GeoIP:          a.geoSvc,
 		MatcherRuntime: a.accountMatcher,
+		SubExporter:    a.subExporter,
 	}
 
 	apiSrv := api.NewServerWithAddress(
@@ -555,6 +567,11 @@ func (a *resinApp) shutdown(ctx context.Context) {
 
 	a.topoRuntime.scheduler.Stop()
 	log.Println("Subscription scheduler stopped")
+
+	if a.subExporter != nil {
+		a.subExporter.Stop()
+		log.Println("Healthy node subscription exporter stopped")
+	}
 
 	a.topoRuntime.probeMgr.Stop()
 	log.Println("Probe manager stopped")

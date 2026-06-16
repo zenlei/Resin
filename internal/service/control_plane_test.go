@@ -139,6 +139,31 @@ func TestValidateRuntimeConfig_ProbeIntervalsMinimum30s(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeConfig_HealthyNodeSubscriptionExport(t *testing.T) {
+	cfg := newDefaultCfg()
+	cfg.HealthyNodeSubscriptionEnabled = true
+	cfg.HealthyNodeSubscriptionToken = ""
+	if err := validateRuntimeConfig(cfg); err == nil {
+		t.Error("expected error when healthy node subscription export is enabled without token")
+	}
+
+	cfg = newDefaultCfg()
+	cfg.HealthyNodeSubscriptionEnabled = true
+	cfg.HealthyNodeSubscriptionToken = "export-token"
+	cfg.HealthyNodeSubscriptionRefreshInterval = config.Duration(29 * time.Second)
+	if err := validateRuntimeConfig(cfg); err == nil {
+		t.Error("expected error for healthy_node_subscription_refresh_interval < 30s")
+	}
+
+	cfg = newDefaultCfg()
+	cfg.HealthyNodeSubscriptionEnabled = true
+	cfg.HealthyNodeSubscriptionToken = "export-token"
+	cfg.HealthyNodeSubscriptionRefreshInterval = config.Duration(30 * time.Second)
+	if err := validateRuntimeConfig(cfg); err != nil {
+		t.Fatalf("expected valid export config, got %v", err)
+	}
+}
+
 func TestValidateRuntimeConfig_LatencyURLAutoAddsAuthority(t *testing.T) {
 	cfg := newDefaultCfg()
 	cfg.LatencyAuthorities = []string{"cloudflare.com"}

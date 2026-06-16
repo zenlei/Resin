@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -27,6 +28,7 @@ import (
 	"github.com/Resinat/Resin/internal/service"
 	"github.com/Resinat/Resin/internal/state"
 	"github.com/Resinat/Resin/internal/subscription"
+	"github.com/Resinat/Resin/internal/subscriptionexport"
 	"github.com/Resinat/Resin/internal/testutil"
 	"github.com/Resinat/Resin/internal/topology"
 )
@@ -100,6 +102,10 @@ func newControlPlaneTestServerWithBodyLimit(
 			DefaultPlatformAllocationPolicy:                 "BALANCED",
 		},
 	}
+	cp.SubExporter = subscriptionexport.NewExporter(subscriptionexport.Config{
+		Pool:       pool,
+		RuntimeCfg: runtimeCfg,
+	})
 
 	systemInfo := service.SystemInfo{
 		Version:   "1.0.0-test",
@@ -885,6 +891,114 @@ func TestAPIContract_KeywordFilteringOnListEndpoints(t *testing.T) {
 	}
 	if len(ruleItems) != 0 {
 		t.Fatalf("rule metadata keyword should not match, got len=%d body=%s", len(ruleItems), rec.Body.String())
+	}
+}
+
+func TestAPIContract_HealthyNodeSubscriptionExport(t *testing.T) {
+	srv, cp, runtimeCfg := newControlPlaneTestServer(t)
+	cfg := config.NewDefaultRuntimeConfig()
+	cfg.HealthyNodeSubscriptionEnabled = true
+	cfg.HealthyNodeSubscriptionToken = "export-token"
+	cfg.HealthyNodeSubscriptionRefreshInterval = config.Duration(5 * time.Minute)
+	runtimeCfg.Store(cfg)
+
+	sub := subscription.NewSubscription("sub-a", "sub-a", "https://example.com/a", true, false)
+	cp.SubMgr.Register(sub)
+	rawEncrypted := []byte(`{"type":"shadowsocks","tag":"ss","server":"1.1.1.1","server_port":443,"method":"2022-blake3-aes-128-gcm","password":"secret"}`)
+	rawHTTP := []byte(`{"type":"http","tag":"plain-http","server":"2.2.2.2","server_port":8080}`)
+	encryptedHash := node.HashFromRawOptions(rawEncrypted)
+	httpHash := node.HashFromRawOptions(rawHTTP)
+	cp.Pool.AddNodeFromSub(encryptedHash, rawEncrypted, sub.ID)
+	cp.Pool.AddNodeFromSub(httpHash, rawHTTP, sub.ID)
+	sub.ManagedNodes().StoreNode(encryptedHash, subscription.ManagedNode{Tags: []string{"ss"}})
+	sub.ManagedNodes().StoreNode(httpHash, subscription.ManagedNode{Tags: []string{"http"}})
+
+	for _, h := range []node.Hash{encryptedHash, httpHash} {
+		entry, ok := cp.Pool.GetEntry(h)
+		if !ok {
+			t.Fatalf("node %s missing", h.Hex())
+		}
+		ob := testutil.NewNoopOutbound()
+		entry.Outbound.Store(&ob)
+		cp.Pool.RecordResult(h, true)
+	}
+
+	statusRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/healthy-node-subscription/status", nil, true)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("status before refresh: got %d, want %d, body=%s", statusRec.Code, http.StatusOK, statusRec.Body.String())
+	}
+	status := decodeJSONMap(t, statusRec)
+	if status["enabled"] != true {
+		t.Fatalf("status enabled = %v, want true", status["enabled"])
+	}
+	if status["subscription_url"] == "" {
+		t.Fatalf("status subscription_url empty: body=%s", statusRec.Body.String())
+	}
+	urls, ok := status["subscription_urls"].(map[string]any)
+	if !ok {
+		t.Fatalf("status subscription_urls missing: body=%s", statusRec.Body.String())
+	}
+	if !strings.Contains(fmt.Sprint(urls["clash"]), "format=clash") {
+		t.Fatalf("clash subscription url missing format=clash: body=%s", statusRec.Body.String())
+	}
+
+	refreshRec := doJSONRequest(t, srv, http.MethodPost, "/api/v1/healthy-node-subscription/actions/refresh", nil, true)
+	if refreshRec.Code != http.StatusOK {
+		t.Fatalf("refresh status: got %d, want %d, body=%s", refreshRec.Code, http.StatusOK, refreshRec.Body.String())
+	}
+	refreshed := decodeJSONMap(t, refreshRec)
+	if refreshed["node_count"] != float64(1) {
+		t.Fatalf("node_count = %v, want 1 body=%s", refreshed["node_count"], refreshRec.Body.String())
+	}
+	if refreshed["clash_node_count"] != float64(1) {
+		t.Fatalf("clash_node_count = %v, want 1 body=%s", refreshed["clash_node_count"], refreshRec.Body.String())
+	}
+
+	unauthRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/healthy-node-subscription?token=wrong", nil, false)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("download wrong token status: got %d, want %d, body=%s", unauthRec.Code, http.StatusUnauthorized, unauthRec.Body.String())
+	}
+	assertErrorCode(t, unauthRec, "UNAUTHORIZED")
+
+	badFormatRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/healthy-node-subscription?token=export-token&format=unknown", nil, false)
+	if badFormatRec.Code != http.StatusBadRequest {
+		t.Fatalf("download bad format status: got %d, want %d, body=%s", badFormatRec.Code, http.StatusBadRequest, badFormatRec.Body.String())
+	}
+	assertErrorCode(t, badFormatRec, "INVALID_ARGUMENT")
+
+	downloadRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/healthy-node-subscription?token=export-token", nil, false)
+	if downloadRec.Code != http.StatusOK {
+		t.Fatalf("download status: got %d, want %d, body=%s", downloadRec.Code, http.StatusOK, downloadRec.Body.String())
+	}
+	var body struct {
+		Outbounds []json.RawMessage `json:"outbounds"`
+	}
+	if err := json.Unmarshal(downloadRec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal subscription body: %v body=%s", err, downloadRec.Body.String())
+	}
+	if len(body.Outbounds) != 1 {
+		t.Fatalf("outbounds len = %d, want 1 body=%s", len(body.Outbounds), downloadRec.Body.String())
+	}
+	if gotHash := node.HashFromRawOptions(body.Outbounds[0]); gotHash != encryptedHash {
+		t.Fatalf("exported hash = %s, want %s", gotHash.Hex(), encryptedHash.Hex())
+	}
+
+	clashRec := doJSONRequest(t, srv, http.MethodGet, "/api/v1/healthy-node-subscription?token=export-token&format=clash", nil, false)
+	if clashRec.Code != http.StatusOK {
+		t.Fatalf("clash download status: got %d, want %d, body=%s", clashRec.Code, http.StatusOK, clashRec.Body.String())
+	}
+	if contentType := clashRec.Header().Get("Content-Type"); !strings.Contains(contentType, "yaml") {
+		t.Fatalf("clash content type = %q, want yaml", contentType)
+	}
+	parsedClash, err := subscription.ParseGeneralSubscription(clashRec.Body.Bytes())
+	if err != nil {
+		t.Fatalf("parse clash export: %v body=%s", err, clashRec.Body.String())
+	}
+	if len(parsedClash) != 1 {
+		t.Fatalf("parsed clash len = %d, want 1 body=%s", len(parsedClash), clashRec.Body.String())
+	}
+	if gotHash := node.HashFromRawOptions(parsedClash[0].RawOptions); gotHash != encryptedHash {
+		t.Fatalf("parsed clash hash = %s, want %s", gotHash.Hex(), encryptedHash.Hex())
 	}
 }
 
